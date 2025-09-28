@@ -219,6 +219,8 @@ public:
 
   void triangle_solver(std::vector<std::pair<STDesc, STDesc>> &match_vec,
                        std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform);
+  void triangle_solver(std::pair<STDesc, STDesc> &std_pair,
+                       Eigen::Vector3d &t, Eigen::Matrix3d &rot);
 
   double plane_geometric_verify(
       const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &source_cloud,
