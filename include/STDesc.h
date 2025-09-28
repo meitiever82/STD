@@ -10,13 +10,13 @@
 #include <mutex>
 #include <pcl/common/io.h>
 #include <pcl/kdtree/kdtree_flann.h>
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <sstream>
 #include <stdio.h>
 #include <string>
 #include <unordered_map>
-#include <visualization_msgs/Marker.h>
-#include <visualization_msgs/MarkerArray.h>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #define HASH_P 116101
 #define MAX_N 10000000000
@@ -214,7 +214,7 @@ void load_pose_with_time(
     std::vector<std::pair<Eigen::Vector3d, Eigen::Matrix3d>> &poses_vec,
     std::vector<double> &times_vec);
 
-void read_parameters(ros::NodeHandle &nh, ConfigSetting &config_setting);
+void read_parameters(std::shared_ptr<rclcpp::Node> node, ConfigSetting &config_setting);
 
 double time_inc(std::chrono::_V2::system_clock::time_point &t_end,
                 std::chrono::_V2::system_clock::time_point &t_begin);
@@ -224,7 +224,7 @@ Eigen::Vector3d point2vec(const pcl::PointXYZI &pi);
 
 void publish_std_pairs(
     const std::vector<std::pair<STDesc, STDesc>> &match_std_pairs,
-    const ros::Publisher &std_publisher);
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr std_publisher);
 
 bool attach_greater_sort(std::pair<double, int> a, std::pair<double, int> b);
 

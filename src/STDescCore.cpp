@@ -1,12 +1,19 @@
-#include "include/STDesc.h"
-#include <geometry_msgs/msg/point.hpp>
+#include "include/STDescCore.h"
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <execution>
+#include <mutex>
+#include <chrono>
+
 void down_sampling_voxel(pcl::PointCloud<pcl::PointXYZI> &pl_feat,
                          double voxel_size) {
   int intensity = rand() % 255;
   if (voxel_size < 0.01) {
     return;
   }
-  std::unordered_map<VOXEL_LOC, M_POINT> voxel_map;
+  std::unordered_map<VOXEL_LOC, M_POINT, VOXEL_LOC_HASHER> voxel_map;
   uint plsize = pl_feat.size();
 
   for (uint i = 0; i < plsize; i++) {
@@ -50,72 +57,6 @@ void down_sampling_voxel(pcl::PointCloud<pcl::PointXYZI> &pl_feat,
     pl_feat[i].intensity = iter->second.intensity / iter->second.count;
     i++;
   }
-}
-
-void read_parameters(std::shared_ptr<rclcpp::Node> node, ConfigSetting &config_setting) {
-
-  // Declare parameters with default values
-  node->declare_parameter("ds_size", 0.5);
-  node->declare_parameter("maximum_corner_num", 100);
-  node->declare_parameter("plane_merge_normal_thre", 0.1);
-  node->declare_parameter("plane_detection_thre", 0.01);
-  node->declare_parameter("voxel_size", 2.0);
-  node->declare_parameter("voxel_init_num", 10);
-  node->declare_parameter("proj_image_resolution", 0.5);
-  node->declare_parameter("proj_dis_min", 0.0);
-  node->declare_parameter("proj_dis_max", 2.0);
-  node->declare_parameter("corner_thre", 10.0);
-  node->declare_parameter("descriptor_near_num", 10);
-  node->declare_parameter("descriptor_min_len", 2.0);
-  node->declare_parameter("descriptor_max_len", 50.0);
-  node->declare_parameter("non_max_suppression_radius", 2.0);
-  node->declare_parameter("std_side_resolution", 0.2);
-  node->declare_parameter("skip_near_num", 50);
-  node->declare_parameter("candidate_num", 50);
-  node->declare_parameter("sub_frame_num", 10);
-  node->declare_parameter("rough_dis_threshold", 0.01);
-  node->declare_parameter("vertex_diff_threshold", 0.5);
-  node->declare_parameter("icp_threshold", 0.5);
-  node->declare_parameter("normal_threshold", 0.2);
-  node->declare_parameter("dis_threshold", 0.5);
-
-  // Get parameter values
-  config_setting.ds_size_ = node->get_parameter("ds_size").as_double();
-  config_setting.maximum_corner_num_ = node->get_parameter("maximum_corner_num").as_int();
-  config_setting.plane_merge_normal_thre_ = node->get_parameter("plane_merge_normal_thre").as_double();
-  config_setting.plane_detection_thre_ = node->get_parameter("plane_detection_thre").as_double();
-  config_setting.voxel_size_ = node->get_parameter("voxel_size").as_double();
-  config_setting.voxel_init_num_ = node->get_parameter("voxel_init_num").as_int();
-  config_setting.proj_image_resolution_ = node->get_parameter("proj_image_resolution").as_double();
-  config_setting.proj_dis_min_ = node->get_parameter("proj_dis_min").as_double();
-  config_setting.proj_dis_max_ = node->get_parameter("proj_dis_max").as_double();
-  config_setting.corner_thre_ = node->get_parameter("corner_thre").as_double();
-  config_setting.descriptor_near_num_ = node->get_parameter("descriptor_near_num").as_int();
-  config_setting.descriptor_min_len_ = node->get_parameter("descriptor_min_len").as_double();
-  config_setting.descriptor_max_len_ = node->get_parameter("descriptor_max_len").as_double();
-  config_setting.non_max_suppression_radius_ = node->get_parameter("non_max_suppression_radius").as_double();
-  config_setting.std_side_resolution_ = node->get_parameter("std_side_resolution").as_double();
-  config_setting.skip_near_num_ = node->get_parameter("skip_near_num").as_int();
-  config_setting.candidate_num_ = node->get_parameter("candidate_num").as_int();
-  config_setting.sub_frame_num_ = node->get_parameter("sub_frame_num").as_int();
-  config_setting.rough_dis_threshold_ = node->get_parameter("rough_dis_threshold").as_double();
-  config_setting.vertex_diff_threshold_ = node->get_parameter("vertex_diff_threshold").as_double();
-  config_setting.icp_threshold_ = node->get_parameter("icp_threshold").as_double();
-  config_setting.normal_threshold_ = node->get_parameter("normal_threshold").as_double();
-  config_setting.dis_threshold_ = node->get_parameter("dis_threshold").as_double();
-
-  std::cout << "Sucessfully load parameters:" << std::endl;
-  std::cout << "----------------Main Parameters-------------------"
-            << std::endl;
-  std::cout << "voxel size:" << config_setting.voxel_size_ << std::endl;
-  std::cout << "loop detection threshold: " << config_setting.icp_threshold_
-            << std::endl;
-  std::cout << "sub-frame number: " << config_setting.sub_frame_num_
-            << std::endl;
-  std::cout << "candidate number: " << config_setting.candidate_num_
-            << std::endl;
-  std::cout << "maximum corners size: " << config_setting.maximum_corner_num_
-            << std::endl;
 }
 
 void load_pose_with_time(
@@ -177,6 +118,7 @@ pcl::PointXYZI vec2point(const Eigen::Vector3d &vec) {
   pi.z = vec[2];
   return pi;
 }
+
 Eigen::Vector3d point2vec(const pcl::PointXYZI &pi) {
   return Eigen::Vector3d(pi.x, pi.y, pi.z);
 }
@@ -185,144 +127,12 @@ bool attach_greater_sort(std::pair<double, int> a, std::pair<double, int> b) {
   return (a.first > b.first);
 }
 
-void publish_std_pairs(
-    const std::vector<std::pair<STDesc, STDesc>> &match_std_pairs,
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr std_publisher) {
-  visualization_msgs::msg::MarkerArray ma_line;
-  visualization_msgs::msg::Marker m_line;
-  m_line.type = visualization_msgs::msg::Marker::LINE_LIST;
-  m_line.action = visualization_msgs::msg::Marker::ADD;
-  m_line.ns = "lines";
-  // Don't forget to set the alpha!
-  m_line.scale.x = 0.25;
-  m_line.pose.orientation.w = 1.0;
-  m_line.header.frame_id = "camera_init";
-  m_line.id = 0;
-  int max_pub_cnt = 1;
-  for (auto var : match_std_pairs) {
-    if (max_pub_cnt > 100) {
-      break;
-    }
-    max_pub_cnt++;
-    m_line.color.a = 0.8;
-    m_line.points.clear();
-    m_line.color.r = 138.0 / 255;
-    m_line.color.g = 226.0 / 255;
-    m_line.color.b = 52.0 / 255;
-    geometry_msgs::msg::Point p;
-    p.x = var.second.vertex_A_[0];
-    p.y = var.second.vertex_A_[1];
-    p.z = var.second.vertex_A_[2];
-    Eigen::Vector3d t_p;
-    t_p << p.x, p.y, p.z;
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    p.x = var.second.vertex_B_[0];
-    p.y = var.second.vertex_B_[1];
-    p.z = var.second.vertex_B_[2];
-    t_p << p.x, p.y, p.z;
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    p.x = var.second.vertex_C_[0];
-    p.y = var.second.vertex_C_[1];
-    p.z = var.second.vertex_C_[2];
-    t_p << p.x, p.y, p.z;
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    p.x = var.second.vertex_B_[0];
-    p.y = var.second.vertex_B_[1];
-    p.z = var.second.vertex_B_[2];
-    t_p << p.x, p.y, p.z;
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    p.x = var.second.vertex_C_[0];
-    p.y = var.second.vertex_C_[1];
-    p.z = var.second.vertex_C_[2];
-    t_p << p.x, p.y, p.z;
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    p.x = var.second.vertex_A_[0];
-    p.y = var.second.vertex_A_[1];
-    p.z = var.second.vertex_A_[2];
-    t_p << p.x, p.y, p.z;
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    // another
-    m_line.points.clear();
-    m_line.color.r = 1;
-    m_line.color.g = 1;
-    m_line.color.b = 1;
-    p.x = var.first.vertex_A_[0];
-    p.y = var.first.vertex_A_[1];
-    p.z = var.first.vertex_A_[2];
-    m_line.points.push_back(p);
-    p.x = var.first.vertex_B_[0];
-    p.y = var.first.vertex_B_[1];
-    p.z = var.first.vertex_B_[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    p.x = var.first.vertex_C_[0];
-    p.y = var.first.vertex_C_[1];
-    p.z = var.first.vertex_C_[2];
-    m_line.points.push_back(p);
-    p.x = var.first.vertex_B_[0];
-    p.y = var.first.vertex_B_[1];
-    p.z = var.first.vertex_B_[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    p.x = var.first.vertex_C_[0];
-    p.y = var.first.vertex_C_[1];
-    p.z = var.first.vertex_C_[2];
-    m_line.points.push_back(p);
-    p.x = var.first.vertex_A_[0];
-    p.y = var.first.vertex_A_[1];
-    p.z = var.first.vertex_A_[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-  }
-  for (int j = 0; j < 100 * 6; j++) {
-    m_line.color.a = 0.00;
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-  }
-  std_publisher->publish(ma_line);
-  m_line.id = 0;
-  ma_line.markers.clear();
-}
-
 void STDescManager::GenerateSTDescs(
     pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
     std::vector<STDesc> &stds_vec) {
 
   // step1, voxelization and plane dection
-  std::unordered_map<VOXEL_LOC, OctoTree *> voxel_map;
+  std::unordered_map<VOXEL_LOC, OctoTree *, VOXEL_LOC_HASHER> voxel_map;
   init_voxel_map(input_cloud, voxel_map);
   pcl::PointCloud<pcl::PointXYZINormal>::Ptr plane_cloud(
       new pcl::PointCloud<pcl::PointXYZINormal>);
@@ -360,7 +170,7 @@ void STDescManager::SearchLoop(
     std::vector<std::pair<STDesc, STDesc>> &loop_std_pair) {
 
   if (stds_vec.size() == 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("std_detector"), "No STDescs!");
+    std::cout << "Error: No STDescs!" << std::endl;
     loop_result = std::pair<int, double>(-1, 0);
     return;
   }
@@ -412,13 +222,10 @@ void STDescManager::AddSTDescs(const std::vector<STDesc> &stds_vec) {
   current_frame_id_++;
   for (auto single_std : stds_vec) {
     // calculate the position of single std
-    STDesc_LOC position;
+    VOXEL_LOC position;
     position.x = (int)(single_std.side_length_[0] + 0.5);
     position.y = (int)(single_std.side_length_[1] + 0.5);
     position.z = (int)(single_std.side_length_[2] + 0.5);
-    position.a = (int)(single_std.angle_[0]);
-    position.b = (int)(single_std.angle_[1]);
-    position.c = (int)(single_std.angle_[2]);
     auto iter = data_base_.find(position);
     if (iter != data_base_.end()) {
       data_base_[position].push_back(single_std);
@@ -433,7 +240,7 @@ void STDescManager::AddSTDescs(const std::vector<STDesc> &stds_vec) {
 
 void STDescManager::init_voxel_map(
     const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
-    std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map) {
+    std::unordered_map<VOXEL_LOC, OctoTree *, VOXEL_LOC_HASHER> &voxel_map) {
   uint plsize = input_cloud->size();
   for (uint i = 0; i < plsize; i++) {
     Eigen::Vector3d p_c(input_cloud->points[i].x, input_cloud->points[i].y,
@@ -456,7 +263,7 @@ void STDescManager::init_voxel_map(
       voxel_map[position]->voxel_points_.push_back(p_c);
     }
   }
-  std::vector<std::unordered_map<VOXEL_LOC, OctoTree *>::iterator> iter_list;
+  std::vector<std::unordered_map<VOXEL_LOC, OctoTree *, VOXEL_LOC_HASHER>::iterator> iter_list;
   std::vector<size_t> index;
   size_t i = 0;
   for (auto iter = voxel_map.begin(); iter != voxel_map.end(); ++iter) {
@@ -480,7 +287,7 @@ void STDescManager::init_voxel_map(
 }
 
 void STDescManager::build_connection(
-    std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map) {
+    std::unordered_map<VOXEL_LOC, OctoTree *, VOXEL_LOC_HASHER> &voxel_map) {
   for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++) {
     if (iter->second->plane_ptr_->is_plane_) {
       OctoTree *current_octo = iter->second;
@@ -545,7 +352,7 @@ void STDescManager::build_connection(
 }
 
 void STDescManager::getPlane(
-    const std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
+    const std::unordered_map<VOXEL_LOC, OctoTree *, VOXEL_LOC_HASHER> &voxel_map,
     pcl::PointCloud<pcl::PointXYZINormal>::Ptr &plane_cloud) {
   for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++) {
     if (iter->second->plane_ptr_->is_plane_) {
@@ -562,7 +369,7 @@ void STDescManager::getPlane(
 }
 
 void STDescManager::corner_extractor(
-    std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
+    std::unordered_map<VOXEL_LOC, OctoTree *, VOXEL_LOC_HASHER> &voxel_map,
     const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
     pcl::PointCloud<pcl::PointXYZINormal>::Ptr &corner_points) {
 
@@ -946,7 +753,7 @@ void STDescManager::build_stdesc(
   int near_num = config_setting_.descriptor_near_num_;
   double max_dis_threshold = config_setting_.descriptor_max_len_;
   double min_dis_threshold = config_setting_.descriptor_min_len_;
-  std::unordered_map<VOXEL_LOC, bool> feat_map;
+  std::unordered_map<VOXEL_LOC, bool, VOXEL_LOC_HASHER> feat_map;
   pcl::KdTreeFLANN<pcl::PointXYZINormal>::Ptr kd_tree(
       new pcl::KdTreeFLANN<pcl::PointXYZINormal>);
   kd_tree->setInputCloud(corner_points);
@@ -1106,7 +913,7 @@ void STDescManager::candidate_selector(
 
   std::vector<bool> useful_match(stds_vec.size());
   std::vector<std::vector<size_t>> useful_match_index(stds_vec.size());
-  std::vector<std::vector<STDesc_LOC>> useful_match_position(stds_vec.size());
+  std::vector<std::vector<VOXEL_LOC>> useful_match_position(stds_vec.size());
   std::vector<size_t> index(stds_vec.size());
   for (size_t i = 0; i < index.size(); ++i) {
     index[i] = i;
@@ -1121,9 +928,9 @@ void STDescManager::candidate_selector(
 #endif
   for (size_t i = 0; i < stds_vec.size(); i++) {
     STDesc src_std = stds_vec[i];
-    STDesc_LOC position;
+    VOXEL_LOC position;
     int best_index = 0;
-    STDesc_LOC best_position;
+    VOXEL_LOC best_position;
     double dis_threshold =
         src_std.side_length_.norm() * config_setting_.rough_dis_threshold_;
     for (auto voxel_inc : voxel_round) {
@@ -1529,4 +1336,17 @@ void OctoTree::init_octo_tree() {
   if (voxel_points_.size() > config_setting_.voxel_init_num_) {
     init_plane();
   }
+}
+
+PlaneSolver::PlaneSolver(Eigen::Vector3d curr_point_, Eigen::Vector3d curr_normal_,
+                         Eigen::Vector3d target_point_, Eigen::Vector3d target_normal_)
+    : curr_point_(curr_point_), curr_normal_(curr_normal_),
+      target_point_(target_point_), target_normal_(target_normal_) {}
+
+ceres::CostFunction *PlaneSolver::Create(const Eigen::Vector3d curr_point_,
+                                         const Eigen::Vector3d curr_normal_,
+                                         const Eigen::Vector3d target_point_,
+                                         const Eigen::Vector3d target_normal_) {
+  return (new ceres::AutoDiffCostFunction<PlaneSolver, 1, 4, 3>(
+      new PlaneSolver(curr_point_, curr_normal_, target_point_, target_normal_)));
 }

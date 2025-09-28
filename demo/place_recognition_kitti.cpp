@@ -1,6 +1,9 @@
-#include "include/STDesc.h"
-#include <nav_msgs/Odometry.h>
+#include "include/STDescCore.h"
+#include "include/STDescROS.h"
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <pcl_conversions/pcl_conversions.h>
+#include <chrono>
 
 // Read KITTI data
 std::vector<float> read_lidar_data(const std::string lidar_data_path) {
@@ -24,34 +27,37 @@ std::vector<float> read_lidar_data(const std::string lidar_data_path) {
 }
 
 int main(int argc, char **argv) {
-  ros::init(argc, argv, "demo_kitti");
-  ros::NodeHandle nh;
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("demo_kitti");
+
   std::string lidar_path = "";
   std::string pose_path = "";
   std::string config_path = "";
-  nh.param<std::string>("lidar_path", lidar_path, "");
-  nh.param<std::string>("pose_path", pose_path, "");
+  node->declare_parameter("lidar_path", "");
+  node->declare_parameter("pose_path", "");
+  node->get_parameter("lidar_path", lidar_path);
+  node->get_parameter("pose_path", pose_path);
 
   ConfigSetting config_setting;
-  read_parameters(nh, config_setting);
+  read_parameters(node, config_setting);
 
-  ros::Publisher pubOdomAftMapped =
-      nh.advertise<nav_msgs::Odometry>("/aft_mapped_to_init", 10);
-  // ros::Publisher pubRegisterCloud =
-  //     nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100);
-  ros::Publisher pubCureentCloud =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_current", 100);
-  ros::Publisher pubCurrentCorner =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_key_points", 100);
-  ros::Publisher pubMatchedCloud =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_matched", 100);
-  ros::Publisher pubMatchedCorner =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_matched_key_points", 100);
-  ros::Publisher pubSTD =
-      nh.advertise<visualization_msgs::MarkerArray>("descriptor_line", 10);
+  auto pubOdomAftMapped = node->create_publisher<nav_msgs::msg::Odometry>(
+      "/aft_mapped_to_init", 10);
+  // auto pubRegisterCloud = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+  //     "/cloud_registered", 100);
+  auto pubCureentCloud = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_current", 100);
+  auto pubCurrentCorner = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_key_points", 100);
+  auto pubMatchedCloud = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_matched", 100);
+  auto pubMatchedCorner = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_matched_key_points", 100);
+  auto pubSTD = node->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "descriptor_line", 10);
 
-  ros::Rate loop(500);
-  ros::Rate slow_loop(10);
+  rclcpp::Rate loop(500);
+  rclcpp::Rate slow_loop(10);
 
   std::vector<std::pair<Eigen::Vector3d, Eigen::Matrix3d>> poses_vec;
   std::vector<double> times_vec;
@@ -70,7 +76,7 @@ int main(int argc, char **argv) {
   std::vector<double> querying_time;
   std::vector<double> update_time;
   int triggle_loop_num = 0;
-  while (ros::ok()) {
+  while (rclcpp::ok()) {
     std::stringstream lidar_data_path;
     lidar_data_path << lidar_path << std::setfill('0') << std::setw(6)
                     << cloudInd << ".bin";
@@ -147,25 +153,25 @@ int main(int argc, char **argv) {
 
       // publish
 
-      sensor_msgs::PointCloud2 pub_cloud;
+      sensor_msgs::msg::PointCloud2 pub_cloud;
       pcl::toROSMsg(*temp_cloud, pub_cloud);
       pub_cloud.header.frame_id = "camera_init";
-      pubCureentCloud.publish(pub_cloud);
+      pubCureentCloud->publish(pub_cloud);
       pcl::toROSMsg(*std_manager->corner_cloud_vec_.back(), pub_cloud);
       pub_cloud.header.frame_id = "camera_init";
-      pubCurrentCorner.publish(pub_cloud);
+      pubCurrentCorner->publish(pub_cloud);
 
       if (search_result.first > 0) {
         triggle_loop_num++;
         pcl::toROSMsg(*std_manager->key_cloud_vec_[search_result.first],
                       pub_cloud);
         pub_cloud.header.frame_id = "camera_init";
-        pubMatchedCloud.publish(pub_cloud);
+        pubMatchedCloud->publish(pub_cloud);
         slow_loop.sleep();
         pcl::toROSMsg(*std_manager->corner_cloud_vec_[search_result.first],
                       pub_cloud);
         pub_cloud.header.frame_id = "camera_init";
-        pubMatchedCorner.publish(pub_cloud);
+        pubMatchedCorner->publish(pub_cloud);
         publish_std_pairs(loop_std_pair, pubSTD);
         slow_loop.sleep();
         // getchar();
@@ -174,7 +180,7 @@ int main(int argc, char **argv) {
       keyCloudInd++;
       loop.sleep();
     }
-    nav_msgs::Odometry odom;
+    nav_msgs::msg::Odometry odom;
     odom.header.frame_id = "camera_init";
     odom.pose.pose.position.x = translation[0];
     odom.pose.pose.position.y = translation[1];
@@ -184,7 +190,7 @@ int main(int argc, char **argv) {
     odom.pose.pose.orientation.x = q.x();
     odom.pose.pose.orientation.y = q.y();
     odom.pose.pose.orientation.z = q.z();
-    pubOdomAftMapped.publish(odom);
+    pubOdomAftMapped->publish(odom);
     loop.sleep();
     cloudInd++;
   }

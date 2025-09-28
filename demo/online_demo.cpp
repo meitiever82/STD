@@ -5,8 +5,8 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <mutex>
-#include <nav_msgs/Odometry.h>
-#include <nav_msgs/Path.h>
+#include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <pcl/common/transforms.h>
 #include <pcl/io/io.h>
 #include <pcl/io/pcd_io.h>
@@ -14,12 +14,12 @@
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <queue>
-#include <ros/ros.h>
-#include <sensor_msgs/PointCloud2.h>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <thread>
 
-#include "include/STDesc.h"
-#include "ros/init.h"
+#include "include/STDescCore.h"
+#include "include/STDescROS.h"
 
 typedef pcl::PointXYZI PointType;
 typedef pcl::PointCloud<PointType> PointCloud;
@@ -27,16 +27,16 @@ typedef pcl::PointCloud<PointType> PointCloud;
 std::mutex laser_mtx;
 std::mutex odom_mtx;
 
-std::queue<sensor_msgs::PointCloud2::ConstPtr> laser_buffer;
-std::queue<nav_msgs::Odometry::ConstPtr> odom_buffer;
+std::queue<sensor_msgs::msg::PointCloud2::SharedPtr> laser_buffer;
+std::queue<nav_msgs::msg::Odometry::SharedPtr> odom_buffer;
 
-void laserCloudHandler(const sensor_msgs::PointCloud2::ConstPtr &msg) {
+void laserCloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
   std::unique_lock<std::mutex> lock(laser_mtx);
 
   laser_buffer.push(msg);
 }
 
-void OdomHandler(const nav_msgs::Odometry::ConstPtr &msg) {
+void OdomHandler(const nav_msgs::msg::Odometry::SharedPtr msg) {
   std::unique_lock<std::mutex> lock(odom_mtx);
 
   odom_buffer.push(msg);
@@ -47,10 +47,10 @@ bool syncPackages(PointCloud::Ptr &cloud, Eigen::Affine3d &pose) {
     return false;
 
   auto laser_msg = laser_buffer.front();
-  double laser_timestamp = laser_msg->header.stamp.toSec();
+  double laser_timestamp = rclcpp::Time(laser_msg->header.stamp).seconds();
 
   auto odom_msg = odom_buffer.front();
-  double odom_timestamp = odom_msg->header.stamp.toSec();
+  double odom_timestamp = rclcpp::Time(odom_msg->header.stamp).seconds();
 
   // check if timestamps are matched
   if (abs(odom_timestamp - laser_timestamp) < 1e-3) {
@@ -74,14 +74,12 @@ bool syncPackages(PointCloud::Ptr &cloud, Eigen::Affine3d &pose) {
     odom_buffer.pop();
 
   } else if (odom_timestamp < laser_timestamp) {
-    ROS_WARN("Current odometry is earlier than laser scan, discard one "
-             "odometry data.");
+    RCLCPP_WARN(rclcpp::get_logger("online_demo"), "Current odometry is earlier than laser scan, discard one odometry data.");
     std::unique_lock<std::mutex> o_lock(odom_mtx);
     odom_buffer.pop();
     return false;
   } else {
-    ROS_WARN(
-        "Current laser scan is earlier than odometry, discard one laser scan.");
+    RCLCPP_WARN(rclcpp::get_logger("online_demo"), "Current laser scan is earlier than odometry, discard one laser scan.");
     std::unique_lock<std::mutex> l_lock(laser_mtx);
     laser_buffer.pop();
     return false;
@@ -104,19 +102,19 @@ void update_poses(const gtsam::Values &estimates,
 }
 
 void visualizeLoopClosure(
-    const ros::Publisher &publisher,
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher,
     const std::vector<std::pair<int, int>> &loop_container,
     const std::vector<Eigen::Affine3d> &key_pose_vec) {
   if (loop_container.empty())
     return;
 
-  visualization_msgs::MarkerArray markerArray;
+  visualization_msgs::msg::MarkerArray markerArray;
   // 闭环顶点
-  visualization_msgs::Marker markerNode;
+  visualization_msgs::msg::Marker markerNode;
   markerNode.header.frame_id = "camera_init"; // camera_init
   // markerNode.header.stamp = ros::Time().fromSec( keyframeTimes.back() );
-  markerNode.action = visualization_msgs::Marker::ADD;
-  markerNode.type = visualization_msgs::Marker::SPHERE_LIST;
+  markerNode.action = visualization_msgs::msg::Marker::ADD;
+  markerNode.type = visualization_msgs::msg::Marker::SPHERE_LIST;
   markerNode.ns = "loop_nodes";
   markerNode.id = 0;
   markerNode.pose.orientation.w = 1;
@@ -128,11 +126,11 @@ void visualizeLoopClosure(
   markerNode.color.b = 1;
   markerNode.color.a = 1;
   // 闭环边
-  visualization_msgs::Marker markerEdge;
+  visualization_msgs::msg::Marker markerEdge;
   markerEdge.header.frame_id = "camera_init";
   // markerEdge.header.stamp = ros::Time().fromSec( keyframeTimes.back() );
-  markerEdge.action = visualization_msgs::Marker::ADD;
-  markerEdge.type = visualization_msgs::Marker::LINE_LIST;
+  markerEdge.action = visualization_msgs::msg::Marker::ADD;
+  markerEdge.type = visualization_msgs::msg::Marker::LINE_LIST;
   markerEdge.ns = "loop_edges";
   markerEdge.id = 1;
   markerEdge.pose.orientation.w = 1;
@@ -146,7 +144,7 @@ void visualizeLoopClosure(
   for (auto it = loop_container.begin(); it != loop_container.end(); ++it) {
     int key_cur = it->first;
     int key_pre = it->second;
-    geometry_msgs::Point p;
+    geometry_msgs::msg::Point p;
     p.x = key_pose_vec[key_cur].translation().x();
     p.y = key_pose_vec[key_cur].translation().y();
     p.z = key_pose_vec[key_cur].translation().z();
@@ -161,47 +159,46 @@ void visualizeLoopClosure(
 
   markerArray.markers.push_back(markerNode);
   markerArray.markers.push_back(markerEdge);
-  publisher.publish(markerArray);
+  publisher->publish(markerArray);
 }
 
 int main(int argc, char **argv) {
-  ros::init(argc, argv, "online_demo");
-  ros::NodeHandle nh;
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("online_demo");
 
   ConfigSetting config_setting;
-  read_parameters(nh, config_setting);
+  read_parameters(node, config_setting);
 
-  // ros::Publisher pubOdomAftMapped =
-  // nh.advertise<nav_msgs::Odometry>("/aft_mapped_to_init", 10);
-  ros::Publisher pubCurrentCloud =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_current", 100);
-  ros::Publisher pubCurrentCorner =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_key_points", 100);
-  ros::Publisher pubMatchedCloud =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_matched", 100);
-  ros::Publisher pubMatchedCorner =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_matched_key_points", 100);
-  ros::Publisher pubSTD =
-      nh.advertise<visualization_msgs::MarkerArray>("descriptor_line", 10);
+  // auto pubOdomAftMapped = node->create_publisher<nav_msgs::msg::Odometry>(
+  //     "/aft_mapped_to_init", 10);
+  auto pubCurrentCloud = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_current", 100);
+  auto pubCurrentCorner = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_key_points", 100);
+  auto pubMatchedCloud = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_matched", 100);
+  auto pubMatchedCorner = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_matched_key_points", 100);
+  auto pubSTD = node->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "descriptor_line", 10);
 
-  ros::Publisher pubOriginCloud =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_origin", 10000);
+  auto pubOriginCloud = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_origin", 10000);
 
-  ros::Publisher pubCorrectCloud =
-      nh.advertise<sensor_msgs::PointCloud2>("/cloud_correct", 10000);
-  ros::Publisher pubCorrectPath =
-      nh.advertise<nav_msgs::Path>("/correct_path", 100000);
+  auto pubCorrectCloud = node->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/cloud_correct", 10000);
+  auto pubCorrectPath = node->create_publisher<nav_msgs::msg::Path>(
+      "/correct_path", 100000);
 
-  ros::Publisher pubOdomOrigin =
-      nh.advertise<nav_msgs::Odometry>("/odom_origin", 10);
-  ros::Publisher pubLoopConstraintEdge =
-      nh.advertise<visualization_msgs::MarkerArray>("/loop_closure_constraints",
-                                                    10);
+  auto pubOdomOrigin = node->create_publisher<nav_msgs::msg::Odometry>(
+      "/odom_origin", 10);
+  auto pubLoopConstraintEdge = node->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/loop_closure_constraints", 10);
 
-  ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(
+  auto subLaserCloud = node->create_subscription<sensor_msgs::msg::PointCloud2>(
       "/cloud_registered_body", 100, laserCloudHandler);
-  ros::Subscriber subOdom =
-      nh.subscribe<nav_msgs::Odometry>("/Odometry", 100, OdomHandler);
+  auto subOdom = node->create_subscription<nav_msgs::msg::Odometry>(
+      "/Odometry", 100, OdomHandler);
 
   STDescManager *std_manager = new STDescManager(config_setting);
 
@@ -249,8 +246,8 @@ int main(int argc, char **argv) {
 
   Eigen::Affine3d last_pose;
   last_pose.setIdentity();
-  while (ros::ok()) {
-    ros::spinOnce();
+  while (rclcpp::ok()) {
+    rclcpp::spin_some(node);
 
     PointCloud::Ptr current_cloud_body(new PointCloud);
     PointCloud::Ptr current_cloud_world(new PointCloud);
@@ -267,13 +264,13 @@ int main(int argc, char **argv) {
       PointCloud origin_cloud;
       pcl::transformPointCloud(*current_cloud_body, origin_cloud,
                                origin_estimate_affine3d);
-      sensor_msgs::PointCloud2 pub_cloud;
+      sensor_msgs::msg::PointCloud2 pub_cloud;
       pcl::toROSMsg(origin_cloud, pub_cloud);
       pub_cloud.header.frame_id = "camera_init";
-      pubOriginCloud.publish(pub_cloud);
+      pubOriginCloud->publish(pub_cloud);
 
       Eigen::Quaterniond _r(origin_estimate_affine3d.rotation());
-      nav_msgs::Odometry odom;
+      nav_msgs::msg::Odometry odom;
       odom.header.frame_id = "camera_init";
       odom.pose.pose.position.x = origin_estimate_affine3d.translation().x();
       odom.pose.pose.position.y = origin_estimate_affine3d.translation().y();
@@ -282,7 +279,7 @@ int main(int argc, char **argv) {
       odom.pose.pose.orientation.x = _r.x();
       odom.pose.pose.orientation.y = _r.y();
       odom.pose.pose.orientation.z = _r.z();
-      pubOdomOrigin.publish(odom);
+      pubOdomOrigin->publish(odom);
 
       *key_cloud += *current_cloud_world;
       initial.insert(cloudInd, gtsam::Pose3(pose.matrix()));
@@ -300,7 +297,7 @@ int main(int argc, char **argv) {
 
       // check if keyframe
       if (cloudInd % config_setting.sub_frame_num_ == 0 && cloudInd != 0) {
-        ROS_INFO("key frame idx: [%d], key cloud size: [%d]", (int)keyCloudInd,
+        RCLCPP_INFO(rclcpp::get_logger("online_demo"), "key frame idx: [%d], key cloud size: [%d]", (int)keyCloudInd,
                  (int)key_cloud->size());
         // step1. Descriptor Extraction
         std::vector<STDesc> stds_vec;
@@ -322,13 +319,13 @@ int main(int argc, char **argv) {
         std_manager->AddSTDescs(stds_vec);
 
         // publish
-        sensor_msgs::PointCloud2 pub_cloud;
+        sensor_msgs::msg::PointCloud2 pub_cloud;
         pcl::toROSMsg(*key_cloud, pub_cloud);
         pub_cloud.header.frame_id = "camera_init";
-        pubCurrentCloud.publish(pub_cloud);
+        pubCurrentCloud->publish(pub_cloud);
         pcl::toROSMsg(*std_manager->corner_cloud_vec_.back(), pub_cloud);
         pub_cloud.header.frame_id = "camera_init";
-        pubCurrentCorner.publish(pub_cloud);
+        pubCurrentCorner->publish(pub_cloud);
 
         std_manager->key_cloud_vec_.push_back(key_cloud->makeShared());
 
@@ -386,12 +383,12 @@ int main(int argc, char **argv) {
           pcl::toROSMsg(*std_manager->key_cloud_vec_[search_result.first],
                         pub_cloud);
           pub_cloud.header.frame_id = "camera_init";
-          pubMatchedCloud.publish(pub_cloud);
+          pubMatchedCloud->publish(pub_cloud);
 
           pcl::toROSMsg(*std_manager->corner_cloud_vec_[search_result.first],
                         pub_cloud);
           pub_cloud.header.frame_id = "camera_init";
-          pubMatchedCorner.publish(pub_cloud);
+          pubMatchedCorner->publish(pub_cloud);
           publish_std_pairs(loop_std_pair, pubSTD);
         }
 
@@ -425,16 +422,16 @@ int main(int argc, char **argv) {
           pcl::transformPointCloud(*cloud_vec[i], correct_cloud, pose_vec[i]);
           full_map += correct_cloud;
         }
-        sensor_msgs::PointCloud2 pub_cloud;
+        sensor_msgs::msg::PointCloud2 pub_cloud;
         pcl::toROSMsg(full_map, pub_cloud);
         pub_cloud.header.frame_id = "camera_init";
-        pubCorrectCloud.publish(pub_cloud);
+        pubCorrectCloud->publish(pub_cloud);
 
         // publish corerct path
-        nav_msgs::Path correct_path;
+        nav_msgs::msg::Path correct_path;
         for (int i = 0; i < pose_vec.size(); i += 1) {
 
-          geometry_msgs::PoseStamped msg_pose;
+          geometry_msgs::msg::PoseStamped msg_pose;
           msg_pose.pose.position.x = pose_vec[i].translation()[0];
           msg_pose.pose.position.y = pose_vec[i].translation()[1];
           msg_pose.pose.position.z = pose_vec[i].translation()[2];
@@ -446,14 +443,14 @@ int main(int argc, char **argv) {
           msg_pose.pose.orientation.w = pose_q.w();
           correct_path.poses.push_back(msg_pose);
         }
-        correct_path.header.stamp = ros::Time::now();
+        correct_path.header.stamp = node->now();
         correct_path.header.frame_id = "camera_init";
-        pubCorrectPath.publish(correct_path);
+        pubCorrectPath->publish(correct_path);
       }
       //   PointCloud correct_cloud;
       //   pcl::transformPointCloud(*current_cloud_body, correct_cloud,
       //                            latest_estimate_affine3d);
-      //   sensor_msgs::PointCloud2 pub_cloud;
+      //   sensor_msgs::msg::PointCloud2 pub_cloud;
       //   pcl::toROSMsg(correct_cloud, pub_cloud);
       //   pub_cloud.header.frame_id = "camera_init";
       //   pubCorrectCloud.publish(pub_cloud);
@@ -478,5 +475,6 @@ int main(int argc, char **argv) {
   // std::cout << "saving map..." << std::endl;
   // pcl::io::savePCDFileBinary("/home/dustier/data/map.pcd", full_map);
 
+  rclcpp::shutdown();
   return 0;
 }
